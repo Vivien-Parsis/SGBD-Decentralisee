@@ -195,6 +195,7 @@ class InMemoryRaftTransport:
 
     def __init__(self) -> None:
         self.nodes: dict[str, RaftNode] = {}
+        self.peer_urls: dict[str, str] = {}
         self.isolated_nodes: set[str] = set()
         self.blocked_links: set[tuple[str, str]] = set()
 
@@ -202,10 +203,11 @@ class InMemoryRaftTransport:
         self.nodes[node.node_id] = node
 
     def add_peer(self, node_id: str, url: str | None = None) -> None:
-        pass
+        if url:
+            self.peer_urls[node_id] = url.rstrip("/")
 
     def remove_peer(self, node_id: str) -> None:
-        pass
+        self.peer_urls.pop(node_id, None)
 
     def can_communicate(self, source_id: str, target_id: str) -> bool:
         if source_id in self.isolated_nodes or target_id in self.isolated_nodes:
@@ -363,8 +365,8 @@ class RaftNode:
         self.role = NodeRole.LEADER
         self.leader_id = self.node_id
         next_idx = self.last_log_index() + 1
-        self.next_index = {peer_id: next_idx for peer_id in self.peer_ids}
-        self.match_index = {peer_id: 0 for peer_id in self.peer_ids}
+        self.next_index = dict.fromkeys(self.peer_ids, next_idx)
+        self.match_index = dict.fromkeys(self.peer_ids, 0)
         self._last_heartbeat_sent = 0.0
 
     # --- 1. Élection du Leader (RequestVote) ---
@@ -387,44 +389,50 @@ class RaftNode:
                 last_log_term=self.last_log_term(),
             )
             peers = list(self.peer_ids)
-
-        votes_received = 1  # Vote pour soi-même
-
-        # Cas d'un cluster à 1 seul nœud
-        with self._lock:
-            if votes_received >= self.quorum_size():
+            if 1 >= self.quorum_size():
                 self._become_leader()
                 return True
 
         if not self.transport:
             return False
 
+        votes_received = 1  # Vote pour soi-même
         for peer_id in peers:
             response = self.transport.send_request_vote(peer_id, request)
             if response is None:
                 continue
-            with self._lock:
-                if response.term > self.current_term:
-                    self._step_down(response.term)
-                    return False
-                if (
-                    self.role != NodeRole.CANDIDATE
-                    or self.current_term != current_term
-                ):
-                    return self.role == NodeRole.LEADER
-                if response.vote_granted:
-                    votes_received += 1
-                    if votes_received >= self.quorum_size():
-                        self._become_leader()
-                        break
+            votes_received, should_stop = self._process_vote_response(
+                response, current_term, votes_received
+            )
+            if should_stop:
+                break
 
-        is_leader = False
         with self._lock:
             is_leader = self.role == NodeRole.LEADER
 
         if is_leader:
             self.send_heartbeats()
         return is_leader
+
+    def _process_vote_response(
+        self,
+        response: RequestVoteResponse,
+        election_term: int,
+        votes_received: int,
+    ) -> tuple[int, bool]:
+        """Traite une réponse de vote et indique si la collecte de votes doit s'arrêter."""
+        with self._lock:
+            if response.term > self.current_term:
+                self._step_down(response.term)
+                return votes_received, True
+            if self.role != NodeRole.CANDIDATE or self.current_term != election_term:
+                return votes_received, True
+            if response.vote_granted:
+                votes_received += 1
+                if votes_received >= self.quorum_size():
+                    self._become_leader()
+                    return votes_received, True
+            return votes_received, False
 
     def handle_request_vote(self, request: RequestVoteRequest) -> RequestVoteResponse:
         """Traite une demande de vote reçue d'un candidat."""
@@ -570,40 +578,15 @@ class RaftNode:
                 self.leader_id = request.leader_id
                 self._reset_election_timer()
 
-            # Vérification de cohérence du log à prev_log_index (§5.3)
-            if request.prev_log_index > 0:
-                if request.prev_log_index > self.last_log_index():
-                    return AppendEntriesResponse(
-                        term=self.current_term,
-                        success=False,
-                        match_index=self.last_log_index(),
-                    )
-                if self.term_at(request.prev_log_index) != request.prev_log_term:
-                    # Suppression de l'entrée en conflit et de toutes les suivantes
-                    self.log = self.log[: request.prev_log_index - 1]
-                    self._save_state()
-                    return AppendEntriesResponse(
-                        term=self.current_term,
-                        success=False,
-                        match_index=self.last_log_index(),
-                    )
+            if not self._has_matching_prev_log(request.prev_log_index, request.prev_log_term):
+                return AppendEntriesResponse(
+                    term=self.current_term,
+                    success=False,
+                    match_index=self.last_log_index(),
+                )
 
-            # Insertion des nouvelles entrées en résolvant les conflits éventuels
-            log_modified = False
-            for entry in request.entries:
-                existing = self.entry_at(entry.index)
-                if existing is not None and existing.term != entry.term:
-                    self.log = self.log[: entry.index - 1]
-                    existing = None
-                    log_modified = True
-                if existing is None:
-                    self.log.append(entry)
-                    log_modified = True
+            self._merge_log_entries(request.entries)
 
-            if log_modified:
-                self._save_state()
-
-            # Mise à jour du commit_index du follower
             if request.leader_commit > self.commit_index:
                 self.commit_index = min(request.leader_commit, self.last_log_index())
                 self._apply_committed_entries()
@@ -613,6 +596,33 @@ class RaftNode:
                 success=True,
                 match_index=self.last_log_index(),
             )
+
+    def _has_matching_prev_log(self, prev_log_index: int, prev_log_term: int) -> bool:
+        """Vérifie la cohérence du log à prev_log_index (§5.3) et tronque en cas de conflit."""
+        if prev_log_index <= 0:
+            return True
+        if prev_log_index > self.last_log_index():
+            return False
+        if self.term_at(prev_log_index) != prev_log_term:
+            self.log = self.log[: prev_log_index - 1]
+            self._save_state()
+            return False
+        return True
+
+    def _merge_log_entries(self, entries: list[LogEntry]) -> None:
+        """Insère les nouvelles entrées du leader en résolvant les conflits éventuels."""
+        log_modified = False
+        for entry in entries:
+            existing = self.entry_at(entry.index)
+            if existing is not None and existing.term != entry.term:
+                self.log = self.log[: entry.index - 1]
+                existing = None
+                log_modified = True
+            if existing is None:
+                self.log.append(entry)
+                log_modified = True
+        if log_modified:
+            self._save_state()
 
     # --- 3. Avancement du commit_index et application ---
 
