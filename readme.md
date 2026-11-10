@@ -1,14 +1,11 @@
-# SGBD décentralisé — Membre 1
+# SGBD décentralisé
 
 Prototype Python de stockage clé-valeur distribué : stockage local JSON, API HTTP et routage par hachage cohérent.
-
-> **Périmètre actuel :** ce dépôt fournit le socle « stockage, réseau et routage ». Il ne prétend pas encore implémenter la réplication réelle, Raft, l'élection de leader, la détection automatique des pannes ni le transfert des données lors d'un changement de cluster. Ces éléments doivent être intégrés avec les autres membres.
 
 ## 1. Prérequis
 
 - Python 3.12 ou plus récent
 - Git
-- IntelliJ IDEA avec le support Python (ou PyCharm)
 
 ## 2. Installation sous Windows (PowerShell)
 
@@ -79,13 +76,3 @@ src/
 tests/                              # tests unitaires et API
 data/                               # fichiers JSON locaux (ignorés par Git)
 ```
-
-## 7. Limites et prochaines intégrations
-
-- **Réplication :** `get_replicas()` calcule une liste de nœuds candidats, mais le client n'écrit pas encore sur plusieurs réplicas.
-- **Consensus :** aucune garantie Raft n'est fournie dans ce socle. Les écritures ne sont pas validées par un quorum.
-- **Pannes :** pas de bascule automatique vers un autre nœud ni de réparation de réplicas.
-- **Membership :** l'anneau sait ajouter et retirer un identifiant, mais le transfert des clés déjà stockées n'est pas automatisé.
-- **Sécurité :** API de démonstration sans authentification ni chiffrement ; à réserver à un environnement local de TP.
-
-Ces limites doivent être clairement indiquées dans le rapport jusqu'à leur implémentation dans le projet global.
