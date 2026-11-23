@@ -4,7 +4,7 @@ Prototype Python de stockage clé-valeur distribué : stockage local JSON, API H
 
 ## 1. Prérequis
 
-- Python 3.12 ou plus récent
+- Python >=3.12
 - Git
 
 ## 2. Installation sous Windows (PowerShell)
@@ -68,10 +68,10 @@ Le client choisit le nœud responsable de la clé grâce à l'anneau de hachage 
 
 ```text
 src/
-  storage/kv_store.py              # stockage local JSON persistant
-  network/node_server.py           # API HTTP d'un nœud (FastAPI)
-  routing/consistent_hashing.py    # anneau SHA-256 et nœuds virtuels
-  client/cluster_client.py         # routage des opérations vers un nœud
+  storage/kv_store.py               # stockage local JSON persistant
+  network/node_server.py            # API HTTP d'un nœud (FastAPI)
+  routing/consistent_hashing.py     # anneau SHA-256 et nœuds virtuels
+  client/cluster_client.py          # routage des opérations vers un nœud
   main.py                           # exemple d'utilisation
 tests/                              # tests unitaires et API
 data/                               # fichiers JSON locaux (ignorés par Git)
