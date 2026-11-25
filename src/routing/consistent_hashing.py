@@ -1,8 +1,8 @@
 """Anneau de hachage cohérent avec plusieurs points virtuels par nœud."""
 from __future__ import annotations
 
-import hashlib
 import bisect
+import hashlib
 
 
 class ConsistentHashRing:
@@ -28,17 +28,20 @@ class ConsistentHashRing:
         self._nodes.add(node_id)
         for index in range(self.virtual_nodes):
             point = self._hash(f"{node_id}#vn{index}")
-            self._owners[point] = node_id
-            bisect.insort(self._ring, point)
+            while point in self._owners and self._owners[point] != node_id:
+                point += 1
+            if point not in self._owners:
+                self._owners[point] = node_id
+                bisect.insort(self._ring, point)
 
     def remove_node(self, node_id: str) -> None:
         if node_id not in self._nodes:
             return
         self._nodes.remove(node_id)
-        points = [point for point, owner in self._owners.items() if owner == node_id]
-        for point in points:
+        removed_points = {point for point, owner in self._owners.items() if owner == node_id}
+        for point in removed_points:
             del self._owners[point]
-            self._ring.remove(point)
+        self._ring = [point for point in self._ring if point not in removed_points]
 
     def get_node(self, key: str) -> str:
         if not self._ring:
