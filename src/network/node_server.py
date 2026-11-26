@@ -71,11 +71,18 @@ def create_app(
     )
 
     if raft_node is None:
-        transport = HttpRaftTransport(peer_map) if peer_map else None
+        # Délais réglables par variables d'environnement (en millisecondes)
+        election_min = float(os.getenv("RAFT_ELECTION_MIN_MS", "300")) / 1000
+        election_max = float(os.getenv("RAFT_ELECTION_MAX_MS", "600")) / 1000
+        heartbeat = float(os.getenv("RAFT_HEARTBEAT_MS", "75")) / 1000
+        rpc_timeout = float(os.getenv("RAFT_RPC_TIMEOUT_MS", "200")) / 1000
+        transport = HttpRaftTransport(peer_map, timeout=rpc_timeout) if peer_map else None
         raft_node = RaftNode(
             node_id=node_id,
             peer_ids=list(peer_map.keys()),
             transport=transport,
+            election_timeout_range=(election_min, election_max),
+            heartbeat_interval=heartbeat,
             state_file=Path(data_file).with_name(f"{node_id}-raft.json"),
         )
         if not peer_map:

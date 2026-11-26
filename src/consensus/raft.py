@@ -7,6 +7,7 @@ import random
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -144,9 +145,12 @@ class RaftTransport(Protocol):
 class HttpRaftTransport:
     """Transport HTTP utilisant httpx pour communiquer avec les autres nœuds."""
 
-    def __init__(self, peers: dict[str, str], timeout: float = 0.5):
+    def __init__(self, peers: dict[str, str], timeout: float = 0.2):
         self.peers: dict[str, str] = {k: v.rstrip("/") for k, v in peers.items()}
         self.timeout = timeout
+        # Client HTTP réutilisé (connexions gardées ouvertes) : beaucoup plus rapide,
+        # surtout sous Windows, que de recréer un client à chaque RPC.
+        self._client = httpx.Client(timeout=timeout, trust_env=False)
 
     def add_peer(self, node_id: str, url: str | None = None) -> None:
         if url:
@@ -162,7 +166,7 @@ class HttpRaftTransport:
         if not url:
             return None
         try:
-            response = httpx.post(
+            response = self._client.post(
                 f"{url}/raft/request_vote",
                 json=request.to_dict(),
                 timeout=self.timeout,
@@ -179,7 +183,7 @@ class HttpRaftTransport:
         if not url:
             return None
         try:
-            response = httpx.post(
+            response = self._client.post(
                 f"{url}/raft/append_entries",
                 json=request.to_dict(),
                 timeout=self.timeout,
@@ -275,6 +279,9 @@ class RaftNode:
         self._last_contact: float = time.monotonic()
         self._last_heartbeat_sent: float = 0.0
         self._election_timeout: float = self._random_election_timeout()
+
+        # Envoi des RPC en parallèle : un pair lent ou en panne ne bloque pas les autres
+        self._rpc_pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix=f"rpc-{node_id}")
 
         # Thread de fond optionnel
         self._running = False
@@ -397,8 +404,12 @@ class RaftNode:
             return False
 
         votes_received = 1  # Vote pour soi-même
-        for peer_id in peers:
-            response = self.transport.send_request_vote(peer_id, request)
+        futures = [
+            self._rpc_pool.submit(self.transport.send_request_vote, peer_id, request)
+            for peer_id in peers
+        ]
+        for future in as_completed(futures):
+            response = future.result()
             if response is None:
                 continue
             votes_received, should_stop = self._process_vote_response(
@@ -511,8 +522,7 @@ class RaftNode:
         if not self.transport:
             return False
 
-        for peer_id in peers:
-            self._replicate_to_single_peer(peer_id)
+        list(self._rpc_pool.map(self._replicate_to_single_peer, peers))
 
         with self._lock:
             return self.commit_index >= self.last_log_index()
