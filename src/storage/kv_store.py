@@ -14,9 +14,10 @@ from typing import Any
 
 
 class KeyValueStore:
-    def __init__(self, file_path: str | Path):
+    def __init__(self, file_path: str | Path, sync_on_write: bool = True):
         self.file_path = Path(file_path)
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        self.sync_on_write = sync_on_write
         self._lock = threading.RLock()
         self._data: dict[str, Any] = {}
         self._load()
@@ -42,7 +43,8 @@ class KeyValueStore:
             with os.fdopen(fd, "w", encoding="utf-8") as file:
                 json.dump(self._data, file, ensure_ascii=False, indent=2)
                 file.flush()
-                os.fsync(file.fileno())
+                if self.sync_on_write:
+                    os.fsync(file.fileno())
             os.replace(temp_name, self.file_path)
         finally:
             if os.path.exists(temp_name):

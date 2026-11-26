@@ -58,6 +58,7 @@ def create_app(
     peers: dict[str, str] | None = None,
     raft_node: RaftNode | None = None,
     replication_factor: int | None = None,
+    virtual_nodes: int = 100,
 ) -> FastAPI:
     node_id = node_id or os.getenv("NODE_ID", "node-1")
     data_file = data_file or os.getenv("DATA_FILE", f"data/{node_id}.json")
@@ -75,12 +76,13 @@ def create_app(
             node_id=node_id,
             peer_ids=list(peer_map.keys()),
             transport=transport,
+            state_file=Path(data_file).with_name(f"{node_id}-raft.json"),
         )
         if not peer_map:
             raft_node.start_election()
 
     initial_nodes = sorted({node_id, *raft_node.peer_ids})
-    ring = ConsistentHashRing(initial_nodes)
+    ring = ConsistentHashRing(initial_nodes, virtual_nodes=virtual_nodes)
     state_machine = RaftStateMachine(
         raft_node=raft_node,
         store=store,
@@ -271,6 +273,15 @@ def create_app(
             ) from exc
         except QuorumNotReachedError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.on_event("startup")
+    def _start_raft() -> None:
+        if raft_node.peer_ids:
+            raft_node.start()
+
+    @app.on_event("shutdown")
+    def _stop_raft() -> None:
+        raft_node.stop()
 
     return app
 
