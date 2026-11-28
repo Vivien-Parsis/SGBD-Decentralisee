@@ -334,4 +334,19 @@ def create_app(
     return app
 
 
-app = create_app()
+
+_default_app: FastAPI | None = None
+
+
+def __getattr__(name: str):
+    """Crée l'application par défaut seulement si on la demande
+    (`uvicorn src.network.node_server:app`). Avant, elle était créée dès
+    l'import : chaque nœud lancé par `python -m src.main` écrivait alors
+    data/node-1-raft.json, et sous Windows ces écritures simultanées
+    faisaient planter des nœuds (PermissionError)."""
+    global _default_app
+    if name == "app":
+        if _default_app is None:
+            _default_app = create_app()
+        return _default_app
+    raise AttributeError(name)

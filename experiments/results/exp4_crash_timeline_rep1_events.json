@@ -1,0 +1,7 @@
+{
+  "t_kill": 5.003482600000098,
+  "t_elected": 5.914487399999871,
+  "t_restart": 10.939777399999912,
+  "old_leader": "node-3",
+  "new_leader": "node-1"
+}

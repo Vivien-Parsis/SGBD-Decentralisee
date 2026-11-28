@@ -1,0 +1,2 @@
+rep,nodes,old_leader,new_leader,election_ms,unavailability_ms,restart_catch_up_ms,acked_writes,lost_writes,wrong_values,replicas_identical,lost_examples
+1,3,node-3,node-1,911.0,1105.1,1536.9,130,0,0,True,

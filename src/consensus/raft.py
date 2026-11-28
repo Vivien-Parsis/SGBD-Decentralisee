@@ -7,6 +7,7 @@ import random
 import tempfile
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -330,7 +331,16 @@ class RaftNode:
                 json.dump(payload, file, ensure_ascii=False, indent=2)
                 file.flush()
                 os.fsync(file.fileno())
-            os.replace(temp_name, self.state_file)
+            # Sous Windows (antivirus, OneDrive), le fichier cible peut être
+            # verrouillé un court instant : on réessaie au lieu de planter.
+            for attempt in range(50):
+                try:
+                    os.replace(temp_name, self.state_file)
+                    break
+                except PermissionError:
+                    if attempt == 49:
+                        raise
+                    time.sleep(0.01)
         finally:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)
@@ -712,7 +722,10 @@ class RaftNode:
             with self._lock:
                 if not self._running:
                     break
-            self.tick()
+            try:
+                self.tick()
+            except Exception:  # le thread Raft ne doit jamais mourir
+                traceback.print_exc()
             time.sleep(poll_interval)
 
     # --- 5. Dynamisme du cluster (ajout et retrait à chaud) ---
