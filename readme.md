@@ -18,45 +18,36 @@ py -m venv .venv
 
 Si l'activation de l'environnement virtuel est bloquée par PowerShell, utilisez directement `.\.venv\Scripts\python.exe` comme dans les exemples.
 
-## 3. Démarrer trois nœuds
+## 3. Démarrer un cluster de trois nœuds
 
-Ouvrez trois terminaux PowerShell, à la racine du projet.
+Ouvrez trois terminaux à la racine du projet et lancez un nœud par terminal. La liste `--peers` est la même pour tous les nœuds.
 
-Terminal 1 :
-
-```powershell
-$env:NODE_ID="node-1"
-$env:DATA_FILE="data/node-1.json"
-.\.venv\Scripts\python.exe -m uvicorn src.network.node_server:app --host 127.0.0.1 --port 8001
+```bash
+python -m src.main --node-id node-1 --port 8001 --peers node-1=http://127.0.0.1:8001,node-2=http://127.0.0.1:8002,node-3=http://127.0.0.1:8003
+python -m src.main --node-id node-2 --port 8002 --peers node-1=http://127.0.0.1:8001,node-2=http://127.0.0.1:8002,node-3=http://127.0.0.1:8003
+python -m src.main --node-id node-3 --port 8003 --peers node-1=http://127.0.0.1:8001,node-2=http://127.0.0.1:8002,node-3=http://127.0.0.1:8003
 ```
 
-Terminal 2 :
+Options : `--rf N` (facteur de réplication, par défaut tous les nœuds stockent tout), `--data-file` (fichier de données). Les délais Raft se règlent avec les variables `RAFT_ELECTION_MIN_MS` (300), `RAFT_ELECTION_MAX_MS` (600), `RAFT_HEARTBEAT_MS` (75) et `RAFT_RPC_TIMEOUT_MS` (200).
 
-```powershell
-$env:NODE_ID="node-2"
-$env:DATA_FILE="data/node-2.json"
-.\.venv\Scripts\python.exe -m uvicorn src.network.node_server:app --host 127.0.0.1 --port 8002
-```
+Vérifier l'élection : `http://127.0.0.1:8001/health` (un seul nœud doit avoir `"role": "leader"`). État Raft détaillé : `/raft/status`.
 
-Terminal 3 :
+## 4. API
 
-```powershell
-$env:NODE_ID="node-3"
-$env:DATA_FILE="data/node-3.json"
-.\.venv\Scripts\python.exe -m uvicorn src.network.node_server:app --host 127.0.0.1 --port 8003
-```
+| Méthode | Route | Rôle |
+| --- | --- | --- |
+| `PUT` | `/kv` (corps `{"key": ..., "value": ...}`) | écrit une valeur ; un suiveur transmet au leader ; 503 si pas de majorité |
+| `GET` | `/kv/{key}` | lit la valeur stockée localement par le nœud |
+| `DELETE` | `/kv/{key}` | supprime une clé (via le leader) |
+| `GET` | `/health`, `/raft/status` | rôle, term, leader, commit index |
+| `POST` / `DELETE` | `/cluster/nodes` | ajout et retrait d'un nœud à chaud |
+| `POST` / `DELETE` | `/admin/partition` | simulation de partition réseau (tests) |
 
-Chaque nœud expose `/health`, `PUT /kv`, `GET /kv/{key}` et `DELETE /kv/{key}`. Documentation interactive : `http://127.0.0.1:8001/docs` (adapter le port).
+Exemple : `curl -X PUT http://127.0.0.1:8001/kv -H "Content-Type: application/json" -d '{"key":"a","value":1}'`
 
-## 4. Utiliser le client du cluster
+## 4 bis. Expériences (performance et pannes)
 
-Dans un quatrième terminal, toujours à la racine :
-
-```powershell
-.\.venv\Scripts\python.exe -m src.main
-```
-
-Le client choisit le nœud responsable de la clé grâce à l'anneau de hachage cohérent.
+Voir [experiments/README.md](experiments/README.md) : `python -m experiments.run all` lance les mesures et produit les graphiques.
 
 ## 5. Lancer les tests
 

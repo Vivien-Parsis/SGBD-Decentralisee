@@ -7,3 +7,4 @@ venv/
 data/*.json
 !data/.gitkeep
 .env
+experiments/runtime/

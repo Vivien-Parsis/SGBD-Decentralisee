@@ -30,6 +30,10 @@ class PutRequest(BaseModel):
     value: Any
 
 
+class PartitionRequest(BaseModel):
+    blocked: list[str]
+
+
 class AddNodeRequest(BaseModel):
     node_id: str
     url: str | None = None
@@ -119,14 +123,43 @@ def create_app(
     def raft_status():
         return raft_node.status()
 
+    # --- Simulation de partition réseau (utilisée par experiments/) ---
+    blocked_peers: set[str] = set()
+    app.state.blocked_peers = blocked_peers
+
+    def _sync_transport_block() -> None:
+        transport = getattr(raft_node, "transport", None)
+        if transport is not None and hasattr(transport, "blocked"):
+            transport.blocked = set(blocked_peers)
+
+    @app.post("/admin/partition")
+    def set_partition(request: PartitionRequest):
+        """Coupe les échanges Raft avec les nœuds listés (dans les deux sens)."""
+        blocked_peers.clear()
+        blocked_peers.update(p for p in request.blocked if p != node_id)
+        _sync_transport_block()
+        return {"node_id": node_id, "blocked": sorted(blocked_peers)}
+
+    @app.delete("/admin/partition")
+    def clear_partition():
+        blocked_peers.clear()
+        _sync_transport_block()
+        return {"node_id": node_id, "blocked": []}
+
+    def _reject_if_blocked(sender_id: str | None) -> None:
+        if sender_id and sender_id in blocked_peers:
+            raise HTTPException(status_code=503, detail="Partition simulée : pair bloqué.")
+
     @app.post("/raft/request_vote")
     def raft_request_vote(payload: dict[str, Any]):
+        _reject_if_blocked(payload.get("candidate_id"))
         request = RequestVoteRequest.from_dict(payload)
         response = raft_node.handle_request_vote(request)
         return response.to_dict()
 
     @app.post("/raft/append_entries")
     def raft_append_entries(payload: dict[str, Any]):
+        _reject_if_blocked(payload.get("leader_id"))
         request = AppendEntriesRequest.from_dict(payload)
         response = raft_node.handle_append_entries(request)
         return response.to_dict()
@@ -157,6 +190,8 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except NotLeaderError as exc:
             leader_url = app.state.peers.get(exc.leader_id or "")
+            if exc.leader_id in blocked_peers:
+                raise HTTPException(status_code=503, detail="Leader injoignable (partition simulée).") from exc
             if leader_url:
                 try:
                     resp = httpx.post(
@@ -192,6 +227,8 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except NotLeaderError as exc:
             leader_url = app.state.peers.get(exc.leader_id or "")
+            if exc.leader_id in blocked_peers:
+                raise HTTPException(status_code=503, detail="Leader injoignable (partition simulée).") from exc
             if leader_url:
                 try:
                     resp = httpx.delete(
@@ -225,6 +262,8 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except NotLeaderError as exc:
             leader_url = app.state.peers.get(exc.leader_id or "")
+            if exc.leader_id in blocked_peers:
+                raise HTTPException(status_code=503, detail="Leader injoignable (partition simulée).") from exc
             if leader_url:
                 try:
                     resp = httpx.put(
@@ -266,6 +305,8 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except NotLeaderError as exc:
             leader_url = app.state.peers.get(exc.leader_id or "")
+            if exc.leader_id in blocked_peers:
+                raise HTTPException(status_code=503, detail="Leader injoignable (partition simulée).") from exc
             if leader_url:
                 try:
                     resp = httpx.delete(f"{leader_url}/kv/{key}", timeout=2.0)

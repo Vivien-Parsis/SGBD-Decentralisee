@@ -44,6 +44,19 @@ class RaftStateMachine:
         # Branchement du callback de commit Raft sur la machine à états
         self.raft_node.on_commit_callback = self.apply_entry
 
+    def _is_committed(self, entry: LogEntry) -> bool:
+        """Vrai si CETTE entrée est validée.
+
+        Vérifier seulement commit_index >= entry.index ne suffit pas : si le leader a
+        perdu son mandat entre-temps (partition), un nouveau leader a pu valider une
+        AUTRE entrée au même index. On vérifie donc aussi le term de l'entrée (§5.3).
+        """
+        with self.raft_node._lock:
+            return (
+                self.raft_node.commit_index >= entry.index
+                and self.raft_node.term_at(entry.index) == entry.term
+            )
+
     def _should_store_key(self, key: str) -> bool:
         """Vérifie si ce nœud doit stocker la clé selon l'anneau et le facteur de réplication."""
         if self.ring is None or self.replication_factor is None:
@@ -131,7 +144,7 @@ class RaftStateMachine:
         entry = self.raft_node.append_command(
             {"op": "PUT", "key": key, "value": value}
         )
-        if self.raft_node.commit_index < entry.index:
+        if not self._is_committed(entry):
             raise QuorumNotReachedError(
                 f"Quorum non atteint pour l'entrée {entry.index} (commit_index={self.raft_node.commit_index})."
             )
@@ -145,7 +158,7 @@ class RaftStateMachine:
 
         existed_before = self.store.contains(key)
         entry = self.raft_node.append_command({"op": "DELETE", "key": key})
-        if self.raft_node.commit_index < entry.index:
+        if not self._is_committed(entry):
             raise QuorumNotReachedError(
                 f"Quorum non atteint pour l'entrée {entry.index} (commit_index={self.raft_node.commit_index})."
             )
@@ -170,7 +183,7 @@ class RaftStateMachine:
                 "members": members,
             }
         )
-        if self.raft_node.commit_index < entry.index:
+        if not self._is_committed(entry):
             raise QuorumNotReachedError(
                 f"Quorum non atteint pour l'ajout du nœud {node_id}."
             )
@@ -190,7 +203,7 @@ class RaftStateMachine:
         entry = self.raft_node.append_command(
             {"op": "REMOVE_NODE", "node_id": node_id}
         )
-        if self.raft_node.commit_index < entry.index:
+        if not self._is_committed(entry):
             raise QuorumNotReachedError(
                 f"Quorum non atteint pour le retrait du nœud {node_id}."
             )

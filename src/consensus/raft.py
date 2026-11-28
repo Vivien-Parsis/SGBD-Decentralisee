@@ -151,6 +151,8 @@ class HttpRaftTransport:
         # Client HTTP réutilisé (connexions gardées ouvertes) : beaucoup plus rapide,
         # surtout sous Windows, que de recréer un client à chaque RPC.
         self._client = httpx.Client(timeout=timeout, trust_env=False)
+        # Pairs injoignables volontairement (simulation de partition réseau)
+        self.blocked: set[str] = set()
 
     def add_peer(self, node_id: str, url: str | None = None) -> None:
         if url:
@@ -163,7 +165,7 @@ class HttpRaftTransport:
         self, target_id: str, request: RequestVoteRequest
     ) -> RequestVoteResponse | None:
         url = self.peers.get(target_id)
-        if not url:
+        if not url or target_id in self.blocked:
             return None
         try:
             response = self._client.post(
@@ -180,7 +182,7 @@ class HttpRaftTransport:
         self, target_id: str, request: AppendEntriesRequest
     ) -> AppendEntriesResponse | None:
         url = self.peers.get(target_id)
-        if not url:
+        if not url or target_id in self.blocked:
             return None
         try:
             response = self._client.post(
